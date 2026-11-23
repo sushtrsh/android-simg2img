@@ -1,1 +1,78 @@
+name: Build Win
 
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            msystem: UCRT64
+            pkgs: gcc:p make:p zlib:p
+            cxx: g++
+            ar: ar
+            ranlib: ranlib
+          - arch: x86
+            runner: windows-latest
+            msystem: MINGW32
+            pkgs: gcc:p make:p zlib:p
+            cxx: g++
+            ar: ar
+            ranlib: ranlib
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          pacboy: ${{ matrix.pkgs }}
+
+      - name: Build (static, tanpa -Werror)
+        run: |
+          mingw32-make \
+            CXX=${{ matrix.cxx }} AR=${{ matrix.ar }} RANLIB=${{ matrix.ranlib }} \
+            CPPFLAGS="-std=gnu++17 -O2 -Wall -D_GNU_SOURCE -D__STDC_FORMAT_MACROS -D__STDC_CONSTANT_MACROS" \
+            LDFLAGS="-L. -lsparse -lm -lz -static"
+          strip *.exe || true
+
+      - name: Package
+        run: |
+          mkdir dist
+          cp simg2img.exe simg2simg.exe img2simg.exe append2simg.exe README.md dist/
+          cd dist && 7z a ../simg2img-windows-${{ matrix.arch }}.zip .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simg2img-windows-${{ matrix.arch }}
+          path: simg2img-windows-${{ matrix.arch }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: simg2img-windows-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', github.run_number) }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          files: simg2img-windows-*.zip
+          
