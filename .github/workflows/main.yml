@@ -19,14 +19,14 @@ jobs:
           - arch: x64
             runner: windows-latest
             msystem: UCRT64
-            pkgs: gcc:p make:p zlib:p
+            pkgs: gcc:p zlib:p
             cxx: g++
             ar: ar
             ranlib: ranlib
           - arch: x86
             runner: windows-latest
             msystem: MINGW32
-            pkgs: gcc:p make:p zlib:p
+            pkgs: gcc:p zlib:p
             cxx: g++
             ar: ar
             ranlib: ranlib
@@ -40,21 +40,23 @@ jobs:
         with:
           msystem: ${{ matrix.msystem }}
           update: true
+          install: make
           pacboy: ${{ matrix.pkgs }}
 
       - name: Build (static, tanpa -Werror)
         run: |
-          mingw32-make \
+          make \
             CXX=${{ matrix.cxx }} AR=${{ matrix.ar }} RANLIB=${{ matrix.ranlib }} \
             CPPFLAGS="-std=gnu++17 -O2 -Wall -D_GNU_SOURCE -D__STDC_FORMAT_MACROS -D__STDC_CONSTANT_MACROS" \
             LDFLAGS="-L. -lsparse -lm -lz -static"
           strip *.exe || true
 
       - name: Package
+        shell: pwsh
         run: |
-          mkdir dist
-          cp simg2img.exe simg2simg.exe img2simg.exe append2simg.exe README.md dist/
-          cd dist && 7z a ../simg2img-windows-${{ matrix.arch }}.zip .
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item simg2img.exe,simg2simg.exe,img2simg.exe,append2simg.exe,README.md dist/
+          Compress-Archive -Path dist/* -DestinationPath simg2img-windows-${{ matrix.arch }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
@@ -75,4 +77,3 @@ jobs:
           name: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', github.run_number) }}
           target_commitish: ${{ github.sha }}
           files: simg2img-windows-*.zip
-          
