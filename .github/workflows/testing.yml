@@ -1,0 +1,101 @@
+name: Testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag release"
+        default: build-3
+        required: true
+
+jobs:
+  test:
+    name: test-${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Download release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ inputs.tag }}" --repo "${{ github.repository }}" --pattern "simg2img-windows-${{ matrix.arch }}.zip"
+          if ($LASTEXITCODE -ne 0) { throw "download gagal" }
+          Expand-Archive simg2img-windows-${{ matrix.arch }}.zip -DestinationPath bin
+          Get-ChildItem bin
+
+      - name: Buat super.img dummy
+        run: |
+          # 64 MiB: campuran blok data acak dan blok nol
+          $mb = 1MB
+          $fs = [IO.File]::Create("super.img")
+          $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+          $buf = New-Object byte[] $mb
+          $zero = New-Object byte[] $mb
+          $pattern = "D","Z","Z","D","Z","D","D","Z"
+          for ($i = 0; $i -lt 64; $i++) {
+            if ($pattern[$i % 8] -eq "D") { $rng.GetBytes($buf); $fs.Write($buf, 0, $mb) }
+            else { $fs.Write($zero, 0, $mb) }
+          }
+          $fs.Close()
+          "super.img = {0} bytes" -f (Get-Item super.img).Length
+
+      - name: img2simg -> simg2img -> bandingkan
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Run($exe, $a) {
+            & ".\bin\$exe" @a
+            if ($LASTEXITCODE -ne 0) { throw "$exe gagal (exit $LASTEXITCODE)" }
+          }
+
+          Run "img2simg.exe" @("super.img", "super.sparse.img")
+
+          # Cek magic sparse 0xED26FF3A (little-endian: 3A FF 26 ED)
+          $hdr = [IO.File]::ReadAllBytes("super.sparse.img")[0..3]
+          if (($hdr -join ",") -ne "58,255,38,237") { throw "magic sparse salah: $($hdr -join ',')" }
+
+          $raw = (Get-Item super.img).Length
+          $sp  = (Get-Item super.sparse.img).Length
+          "raw=$raw sparse=$sp"
+          if ($sp -ge $raw) { throw "sparse harusnya lebih kecil dari raw" }
+
+          Run "simg2img.exe" @("super.sparse.img", "super.restored.img")
+
+          $h1 = (Get-FileHash super.img -Algorithm SHA256).Hash
+          $h2 = (Get-FileHash super.restored.img -Algorithm SHA256).Hash
+          "orig     $h1"
+          "restored $h2"
+          if ($h1 -ne $h2) { throw "hash beda: hasil restore tidak sama dengan asli" }
+
+          "OK: sparse -> raw cocok"
+
+      - name: Merge beberapa sparse -> satu raw
+        run: |
+          $ErrorActionPreference = "Stop"
+          $orig = (Get-FileHash super.img -Algorithm SHA256).Hash
+
+          # Pecah sparse jadi beberapa bagian (maks ~20 MB per bagian): super.split.1, .2, ...
+          & .\bin\simg2simg.exe super.sparse.img super.split 20971520
+          if ($LASTEXITCODE -ne 0) { throw "simg2simg gagal" }
+
+          $parts = Get-ChildItem "super.split.*" | Sort-Object { [int]($_.Extension.TrimStart('.')) }
+          if ($parts.Count -lt 2) { throw "harusnya terpecah jadi >= 2 bagian, dapat $($parts.Count)" }
+          $parts | ForEach-Object { "{0}  {1} bytes" -f $_.Name, $_.Length }
+
+          # simg2img super1 super2 ... output_raw
+          $names = $parts | ForEach-Object { $_.Name }
+          & .\bin\simg2img.exe @names super_merge.img
+          if ($LASTEXITCODE -ne 0) { throw "simg2img (merge) gagal" }
+
+          $merged = (Get-FileHash super_merge.img -Algorithm SHA256).Hash
+          "orig   $orig"
+          "merged $merged"
+          "ukuran orig=$((Get-Item super.img).Length) merged=$((Get-Item super_merge.img).Length)"
+          if ($orig -ne $merged) { throw "hash hasil merge tidak sama dengan asli" }
+          "OK: merge cocok"
+          
