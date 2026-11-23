@@ -98,4 +98,61 @@ jobs:
           "ukuran orig=$((Get-Item super.img).Length) merged=$((Get-Item super_merge.img).Length)"
           if ($orig -ne $merged) { throw "hash hasil merge tidak sama dengan asli" }
           "OK: merge cocok"
+
+      - name: Merge dua sparse -> super.merge.img (raw)
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Run($exe, $a) {
+            & ".\bin\$exe" @a
+            if ($LASTEXITCODE -ne 0) { throw "$exe gagal (exit $LASTEXITCODE)" }
+          }
+          function Magic($f) { ([IO.File]::ReadAllBytes($f)[0..3]) -join "," }
+
+          # super1.img dummy: 48 MiB
+          $mb = 1MB
+          $fs = [IO.File]::Create("super1.img")
+          $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+          $buf = New-Object byte[] $mb
+          $zero = New-Object byte[] $mb
+          $pattern = "Z","D","D","Z","D","Z","Z","D"
+          for ($i = 0; $i -lt 48; $i++) {
+            if ($pattern[$i % 8] -eq "D") { $rng.GetBytes($buf); $fs.Write($buf, 0, $mb) }
+            else { $fs.Write($zero, 0, $mb) }
+          }
+          $fs.Close()
+
+          Run "img2simg.exe" @("super1.img", "super1.sparse.img")
+          foreach ($f in "super.sparse.img", "super1.sparse.img") {
+            if ((Magic $f) -ne "58,255,38,237") { throw "$f bukan sparse (magic: $(Magic $f))" }
+          }
+
+          $sz  = (Get-Item super.img).Length
+          $sz1 = (Get-Item super1.img).Length
+          "super.img=$sz super1.img=$sz1"
+          if ($sz -eq $sz1) { throw "ukuran dummy harusnya beda" }
+
+          $h  = (Get-FileHash super.img  -Algorithm SHA256).Hash
+          $h1 = (Get-FileHash super1.img -Algorithm SHA256).Hash
+          if ($h -eq $h1) { throw "isi dummy harusnya beda" }
+
+          Run "simg2img.exe" @("super.sparse.img", "super1.sparse.img", "super.merge.img")
+
+          if ((Get-Item super.merge.img).Length -ne $sz1) {
+            throw "ukuran merge $((Get-Item super.merge.img).Length), harusnya $sz1"
+          }
+          $hm = (Get-FileHash super.merge.img -Algorithm SHA256).Hash
+          "super.img       $h"
+          "super1.img      $h1"
+          "super.merge.img $hm"
+          if ($hm -ne $h1) { throw "super.merge.img harusnya sama dengan super1.img" }
+          if ($hm -eq $h)  { throw "super.merge.img tidak boleh sama dengan super.img" }
+          "OK: super + super1 -> super.merge.img (raw) cocok"
+
+          # super1.sparse.img super.sparse.img 
+          Run "simg2img.exe" @("super1.sparse.img", "super.sparse.img", "super.merge.rev.img")
+          if ((Get-Item super.merge.rev.img).Length -ne $sz) { throw "ukuran merge terbalik salah" }
+          if ((Get-FileHash super.merge.rev.img -Algorithm SHA256).Hash -ne $h) {
+            throw "merge urutan terbalik harusnya sama dengan super.img"
+          }
+          "OK: super1 + super -> raw cocok ()"
           
